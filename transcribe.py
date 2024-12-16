@@ -1,171 +1,442 @@
+"""
+Media Transcription Tool - A command-line tool to convert audio and video files into text using OpenAI's Whisper API.
+Author: OkhDev
+Version: 1.0.0
+"""
+
 import os
 import json
-from pathlib import Path
+import math
+import tempfile
+import threading
+import time
 from datetime import datetime
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
 import openai
 from dotenv import load_dotenv
 from moviepy.editor import VideoFileClip, AudioFileClip
-import tempfile
-import math
 
-# Constants
-MAX_CHUNK_DURATION = 10 * 60  # 10 minutes in seconds
+# ============================================================================
+# Constants and Configuration
+# ============================================================================
 
-# Load environment variables
-load_dotenv()
-print("Environment variables loaded ✓")
+MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB in bytes
+UPDATE_INTERVAL = 15  # seconds
 
-# Configure OpenAI client
-client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-print("OpenAI client configured ✓")
+SUPPORTED_VIDEO_FORMATS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v', '.3gp'}
+SUPPORTED_AUDIO_FORMATS = {'.mp3', '.wav', '.aac', '.ogg', '.wma', '.m4a', '.opus', '.flac', '.aiff', '.amr'}
 
-def setup_directories():
-    """Create necessary directories if they don't exist."""
-    Path('videos').mkdir(exist_ok=True)
-    Path('transcripts').mkdir(exist_ok=True)
-    Path('temp').mkdir(exist_ok=True)
-    print("Directories ready ✓")
+class Colors:
+    """ANSI color codes for terminal output."""
+    GREEN = '\033[92m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    YELLOW = '\033[93m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
 
-def get_video_files():
-    """Get all MP4 files from the videos directory."""
-    video_dir = Path('videos')
-    files = list(video_dir.glob('*.mp4'))
-    if files:
-        print(f"\nFound {len(files)} video(s) to process ✓")
-    return files
+class Symbols:
+    """Unicode symbols for status messages."""
+    CHECK = '✓'
+    CROSS = '✗'
+    INFO = 'ℹ'
+    WARNING = '⚠'
+    PROCESS = '⚙'
+    TIME = '⏱'
+    FILE = '⚄'
+    FOLDER = '⚃'
+    MEDIA = '▶'
+    AUDIO = '♪'
+    VIDEO = '◉'
+    STAR = '★'
+    SPARKLES = '✧'
 
-def extract_audio(video_path):
-    """Extract audio from video and split into chunks."""
-    print(f"Extracting audio...")
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+def format_time(seconds: float) -> str:
+    """Format time duration into a human-readable string."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
     
-    # Load video and extract audio
-    video = VideoFileClip(str(video_path))
-    audio = video.audio
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    elif minutes > 0:
+        return f"{minutes}m {secs:02d}s"
+    else:
+        return f"{secs}s"
+
+def print_status(message: str, status: str = "info") -> None:
+    """Print a formatted status message with appropriate color and symbol."""
+    status_config = {
+        "success": (Colors.GREEN, Symbols.CHECK),
+        "error": (Colors.RED, Symbols.CROSS),
+        "warning": (Colors.YELLOW, Symbols.WARNING),
+        "info": (Colors.RESET, Symbols.INFO),
+        "process": (Colors.BLUE, Symbols.PROCESS),
+    }
     
-    # Get duration and calculate number of chunks
-    duration = video.duration
-    num_chunks = math.ceil(duration / MAX_CHUNK_DURATION)
-    chunk_files = []
+    color, symbol = status_config.get(status, (Colors.RESET, Symbols.INFO))
+    print(f"{color}{symbol} {message}{Colors.RESET}")
+
+def print_header(title: str = "Media Transcription Tool") -> None:
+    """Print a styled header for the application."""
+    print(f"\n{Colors.BLUE}{Symbols.MEDIA}  {title}  {Symbols.AUDIO}{Colors.RESET}")
+    print(f"{Colors.BLUE}{'─' * 40}{Colors.RESET}")
+
+def print_divider() -> None:
+    """Print a divider line for visual separation."""
+    print(f"\n{Colors.BLUE}{'─' * 60}{Colors.RESET}\n")
+
+# ============================================================================
+# Progress Tracking
+# ============================================================================
+
+class ProgressTracker:
+    """Handles progress tracking and status updates during processing."""
     
-    # Create chunks
-    for i in range(num_chunks):
-        start_time = i * MAX_CHUNK_DURATION
-        end_time = min((i + 1) * MAX_CHUNK_DURATION, duration)
+    def __init__(self):
+        self.processing = False
+        self.last_update = 0
+        self.operation_start_time = 0
+    
+    def show_processing_status(self, message: str) -> None:
+        """Show processing status at regular intervals."""
+        self.processing = True
+        self.last_update = time.time()
+        self.operation_start_time = time.time()
         
-        # Extract audio chunk
-        audio_chunk = audio.subclip(start_time, end_time)
-        
-        # Save to temporary file
-        temp_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False, dir='temp')
-        temp_path = temp_file.name
-        temp_file.close()
-        
-        audio_chunk.write_audiofile(temp_path, verbose=False, logger=None)
-        chunk_files.append((temp_path, start_time, end_time))
+        while self.processing:
+            current_time = time.time()
+            if current_time - self.last_update >= UPDATE_INTERVAL:
+                elapsed_time = current_time - self.operation_start_time
+                elapsed_str = format_time(elapsed_time)
+                print(f"{Colors.YELLOW}{Symbols.PROCESS} Still {message.lower()} (Elapsed: {elapsed_str}){Colors.RESET}", end='\r')
+                self.last_update = current_time
+            time.sleep(1)
     
-    # Clean up
-    video.close()
-    audio.close()
+    def start(self, message: str) -> threading.Thread:
+        """Start progress tracking in a separate thread."""
+        thread = threading.Thread(target=self.show_processing_status, args=(message,))
+        thread.daemon = True
+        thread.start()
+        return thread
     
-    return chunk_files
+    def stop(self) -> None:
+        """Stop progress tracking."""
+        self.processing = False
+        time.sleep(0.1)
 
-def transcribe_chunk(chunk_path):
-    """Transcribe a single chunk of audio."""
-    try:
-        with open(chunk_path, 'rb') as audio_file:
-            response = client.audio.transcriptions.create(
-                file=audio_file,
-                model="whisper-1",
-                response_format="verbose_json"
+# ============================================================================
+# Environment Setup
+# ============================================================================
+
+class EnvironmentSetup:
+    """Handles environment configuration and directory setup."""
+    
+    @staticmethod
+    def check_env_setup() -> bool:
+        """Check and setup environment variables."""
+        env_path = Path('.env')
+        
+        if not env_path.exists():
+            print_status("No .env file found. Creating one for you...", "error")
+            with open(env_path, 'w') as f:
+                f.write("# OpenAI API Configuration\nOPENAI_API_KEY=your_api_key_here")
+            print_status("Created .env file. Please add your OpenAI API key.", "error")
+            return False
+        
+        load_dotenv()
+        api_key = os.getenv('OPENAI_API_KEY')
+        
+        if not api_key or api_key == "your_api_key_here":
+            print_status("No valid API key found in .env file.", "error")
+            print_status("Please ensure your .env file contains: OPENAI_API_KEY=your_actual_api_key", "error")
+            return False
+        
+        print_status("Environment variables loaded successfully", "success")
+        return True
+    
+    @staticmethod
+    def setup_directories() -> None:
+        """Create necessary directories for operation."""
+        try:
+            Path('media-files').mkdir(exist_ok=True)
+            print_status("Created media-files directory", "success")
+            
+            Path('transcripts').mkdir(exist_ok=True)
+            print_status("Created transcripts directory", "success")
+            
+            Path('temp').mkdir(exist_ok=True)
+            print_status("Created temporary directory", "success")
+            
+        except Exception as e:
+            print_status(f"Error creating directories: {str(e)}", "error")
+            raise
+
+# ============================================================================
+# Media Processing
+# ============================================================================
+
+class MediaProcessor:
+    """Handles media file processing and chunking."""
+    
+    def __init__(self):
+        self.progress = ProgressTracker()
+    
+    def get_media_files(self) -> List[Path]:
+        """Get all supported media files from the media-files directory."""
+        media_dir = Path('media-files')
+        supported_files = []
+        unsupported_files = []
+        
+        for file_path in media_dir.iterdir():
+            if file_path.is_file():
+                extension = file_path.suffix.lower()
+                if extension in SUPPORTED_VIDEO_FORMATS or extension in SUPPORTED_AUDIO_FORMATS:
+                    supported_files.append(file_path)
+                else:
+                    unsupported_files.append(file_path)
+        
+        if supported_files:
+            print_status(f"Found {len(supported_files)} supported media file(s)", "success")
+        
+        if unsupported_files:
+            print_status(f"Skipping {len(unsupported_files)} unsupported file(s):", "warning")
+            for file in unsupported_files:
+                print(f"{Colors.YELLOW}   {Symbols.WARNING} Skipping: {file.name}{Colors.RESET}")
+        
+        return supported_files
+    
+    def extract_audio(self, media_path: Path) -> List[tuple]:
+        """Extract audio from media file and split into chunks."""
+        try:
+            is_video = media_path.suffix.lower() in SUPPORTED_VIDEO_FORMATS
+            file_type = "video" if is_video else "audio"
+            
+            print_status(f"Loading {file_type} file...", "process")
+            progress_thread = self.progress.start(f"Loading {file_type} file")
+            
+            clip = VideoFileClip(str(media_path)) if is_video else AudioFileClip(str(media_path))
+            self.progress.stop()
+            
+            audio = clip.audio if hasattr(clip, 'audio') else clip
+            duration = clip.duration
+            
+            print_status(f"Media duration: {format_time(duration)}", "info")
+            
+            # Analyze file size
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False, dir='temp') as temp_file:
+                temp_path = temp_file.name
+            
+            progress_thread = self.progress.start("Analyzing file size")
+            audio.write_audiofile(temp_path, verbose=False, logger=None)
+            self.progress.stop()
+            
+            total_size = os.path.getsize(temp_path)
+            os.unlink(temp_path)
+            
+            num_chunks = math.ceil(total_size / MAX_FILE_SIZE)
+            chunk_duration = duration / num_chunks
+            
+            print_status(f"File size: {total_size / (1024*1024):.1f}MB, Splitting into {num_chunks} chunks", "info")
+            
+            chunk_files = []
+            
+            for i in range(num_chunks):
+                start_time = i * chunk_duration
+                end_time = min((i + 1) * chunk_duration, duration)
+                
+                print_status(f"Extracting chunk {i+1}/{num_chunks}", "process")
+                progress_thread = self.progress.start(f"Processing chunk {i+1}/{num_chunks}")
+                
+                audio_chunk = audio.subclip(start_time, end_time)
+                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False, dir='temp') as temp_file:
+                    temp_path = temp_file.name
+                
+                audio_chunk.write_audiofile(temp_path, verbose=False, logger=None)
+                self.progress.stop()
+                
+                chunk_size = os.path.getsize(temp_path)
+                if chunk_size > MAX_FILE_SIZE:
+                    print_status(f"Warning: Chunk {i+1} exceeds 25MB limit. File will be skipped.", "warning")
+                    for chunk_path, _, _ in chunk_files:
+                        try:
+                            os.unlink(chunk_path)
+                        except:
+                            pass
+                    return []
+                
+                chunk_files.append((temp_path, start_time, end_time))
+                print_status(f"Chunk {i+1} ready ({chunk_size / (1024*1024):.1f}MB)", "success")
+            
+            return chunk_files
+            
+        except Exception as e:
+            self.progress.stop()
+            print_status(f"Audio extraction failed: {str(e)}", "error")
+            return []
+            
+        finally:
+            if 'clip' in locals():
+                clip.close()
+                if hasattr(clip, 'audio') and clip.audio is not None:
+                    clip.audio.close()
+
+# ============================================================================
+# Transcription
+# ============================================================================
+
+class Transcriber:
+    """Handles the transcription of audio chunks using OpenAI's Whisper API."""
+    
+    def __init__(self):
+        self.progress = ProgressTracker()
+        self.client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    
+    def transcribe_chunk(self, chunk_path: str) -> Optional[str]:
+        """Transcribe a single chunk of audio."""
+        try:
+            progress_thread = self.progress.start("Transcribing audio chunk")
+            with open(chunk_path, 'rb') as audio_file:
+                response = self.client.audio.transcriptions.create(
+                    file=audio_file,
+                    model="whisper-1",
+                    response_format="verbose_json"
+                )
+            self.progress.stop()
+            return response.text.strip()
+            
+        except Exception as e:
+            self.progress.stop()
+            print_status(f"Error transcribing chunk: {str(e)}", "error")
+            return None
+
+    def create_transcript_file(self, video_name: str) -> Path:
+        """Create and return the transcript file path."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return Path('transcripts') / f"{video_name}_{timestamp}.txt"
+
+    def append_to_transcript(self, file_path: Path, text: str) -> None:
+        """Append text to the transcript file."""
+        with open(file_path, 'a', encoding='utf-8') as f:
+            f.write(text + '\n\n')
+
+# ============================================================================
+# Main Application
+# ============================================================================
+
+class TranscriptionApp:
+    """Main application class that orchestrates the transcription process."""
+    
+    def __init__(self):
+        self.env_setup = EnvironmentSetup()
+        self.media_processor = MediaProcessor()
+        self.transcriber = Transcriber()
+    
+    def process_media_file(self, media_path: Path) -> Optional[Path]:
+        """Process a single media file."""
+        try:
+            print_header(f"Processing: {media_path.name}")
+            transcript_file = self.transcriber.create_transcript_file(media_path.stem)
+            
+            chunk_files = self.media_processor.extract_audio(media_path)
+            if not chunk_files:
+                return None
+            
+            for i, (chunk_path, start_time, end_time) in enumerate(chunk_files, 1):
+                formatted_start = format_time(start_time)
+                formatted_end = format_time(end_time)
+                print(f"\n{Colors.BLUE}Chunk {i}/{len(chunk_files)} ({formatted_start} → {formatted_end}){Colors.RESET}")
+                
+                text = self.transcriber.transcribe_chunk(chunk_path)
+                if text:
+                    self.transcriber.append_to_transcript(transcript_file, text)
+                    print_status(f"Chunk {i}/{len(chunk_files)} completed", "success")
+                else:
+                    print_status(f"Failed to transcribe chunk {i}/{len(chunk_files)}", "error")
+                
+                os.unlink(chunk_path)
+            
+            return transcript_file
+            
+        except Exception as e:
+            print_status(f"Error processing {media_path.name}: {str(e)}", "error")
+            return None
+    
+    def cleanup(self) -> None:
+        """Clean up temporary files."""
+        try:
+            for file in Path('temp').glob('*'):
+                try:
+                    os.unlink(file)
+                except:
+                    pass
+            print_status("Cleared temp directory", "success")
+        except Exception as e:
+            print_status(f"Error cleaning up: {str(e)}", "warning")
+    
+    def run(self) -> None:
+        """Run the transcription application."""
+        print_header()
+        
+        if not self.env_setup.check_env_setup():
+            return
+        
+        try:
+            self.env_setup.setup_directories()
+            media_files = self.media_processor.get_media_files()
+            
+            if not media_files:
+                print_status("No supported media files found", "warning")
+                print_status("Add media files to the 'media-files' folder", "info")
+                return
+            
+            total_files = len(media_files)
+            print(f"\n{Colors.BLUE}Starting Transcription - {total_files} file(s){Colors.RESET}")
+            
+            successful = 0
+            failed_files = []
+            
+            for i, media_path in enumerate(media_files, 1):
+                if i > 1:
+                    print_divider()
+                
+                try:
+                    if self.process_media_file(media_path):
+                        successful += 1
+                    else:
+                        failed_files.append(media_path)
+                except Exception as e:
+                    print_status(f"Error processing {media_path.name}: {str(e)}", "error")
+                    failed_files.append(media_path)
+            
+            print_divider()
+            print_status(
+                f"Processing complete! Successfully transcribed {successful}/{total_files} files",
+                "success" if successful == total_files else "warning"
             )
-        
-        # Get the full text from the response
-        return response.text.strip()
-        
-    except Exception as e:
-        print(f"\n❌ Error transcribing chunk: {str(e)}")
-        return None
-
-def create_transcript_file(video_name):
-    """Create and return the transcript file path."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path('transcripts') / f"{video_name}_{timestamp}.txt"
-
-def append_to_transcript(file_path, text):
-    """Append text to the transcript file."""
-    with open(file_path, 'a', encoding='utf-8') as f:
-        f.write(text + '\n\n')
-
-def transcribe_video(video_path):
-    """Transcribe the entire video file in chunks."""
-    try:
-        print(f"\nProcessing: {video_path.name}")
-        
-        # Create transcript file
-        transcript_file = create_transcript_file(video_path.stem)
-        print(f"Created transcript file: {transcript_file.name}")
-        
-        # Extract audio and split into chunks
-        chunk_files = extract_audio(video_path)
-        print(f"Split into {len(chunk_files)} chunks")
-        
-        # Process each chunk
-        for i, (chunk_path, _, _) in enumerate(chunk_files, 1):
-            print(f"\nTranscribing chunk {i} of {len(chunk_files)}...")
             
-            # Transcribe chunk
-            chunk_text = transcribe_chunk(chunk_path)
-            if chunk_text:
-                # Immediately append to transcript file
-                append_to_transcript(transcript_file, chunk_text)
-                print(f"✓ Chunk {i} transcribed and saved")
-            
-            # Clean up chunk file
-            os.unlink(chunk_path)
-        
-        return transcript_file
-        
-    except Exception as e:
-        print(f"\n❌ Error: {str(e)}")
-        return None
-    finally:
-        # Clean up any remaining temporary files
-        for file in Path('temp').glob('*'):
-            try:
-                os.unlink(file)
-            except:
-                pass
+            if failed_files:
+                print_status("The following files could not be processed:", "error")
+                for file in failed_files:
+                    print_status(f"• {file.name}", "error")
+                    
+        except KeyboardInterrupt:
+            print_status("\nTranscription interrupted by user", "warning")
+        except Exception as e:
+            print_status(f"An unexpected error occurred: {str(e)}", "error")
+        finally:
+            self.cleanup()
 
-def main():
-    print("\n🎬 Video Transcription Script")
-    print("="*30)
-    
-    # Check for API key
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        print("❌ Error: OPENAI_API_KEY not found")
-        return
-
-    # Setup directories
-    setup_directories()
-    
-    # Get video files
-    video_files = get_video_files()
-    
-    if not video_files:
-        print("\n❌ No MP4 files found in videos directory")
-        return
-    
-    # Process each video
-    for i, video_path in enumerate(video_files, 1):
-        print(f"\nFile {i} of {len(video_files)}")
-        print("="*30)
-        
-        output_file = transcribe_video(video_path)
-        if output_file:
-            print(f"\n✓ Transcription complete: {output_file.name}")
-    
-    print("\n✨ All files processed!")
+# ============================================================================
+# Entry Point
+# ============================================================================
 
 if __name__ == "__main__":
-    main() 
+    app = TranscriptionApp()
+    app.run() 

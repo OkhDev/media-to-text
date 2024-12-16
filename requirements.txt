@@ -1,5 +1,4 @@
-openai==1.3.5
-python-dotenv==1.0.0
-tqdm==4.66.1
-moviepy==1.0.3
-httpx==0.24.1 
+openai>=1.3.5
+python-dotenv>=1.0.0
+moviepy>=1.0.3
+httpx>=0.24.1 

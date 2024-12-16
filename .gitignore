@@ -47,3 +47,5 @@ Thumbs.db
 # Project specific
 combined_transcript.txt
 transcripts/ 
+media-files/
+temp/
