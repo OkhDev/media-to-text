@@ -1,7 +1,15 @@
 """
 Media Transcription Tool - A command-line tool to convert audio and video files into text using OpenAI's Whisper API.
+
+This script provides a robust solution for transcribing media files by:
+1. Automatically handling both audio and video inputs
+2. Splitting large files into processable chunks
+3. Managing API interactions with OpenAI's Whisper
+4. Providing real-time progress updates
+5. Implementing error handling and cleanup
+
 Author: OkhDev
-Version: 1.0.0
+Version: 1.0.1
 """
 
 import os
@@ -183,13 +191,30 @@ class EnvironmentSetup:
 # ============================================================================
 
 class MediaProcessor:
-    """Handles media file processing and chunking."""
+    """
+    Handles media file processing and chunking.
+    
+    This class is responsible for:
+    1. Discovering supported media files
+    2. Extracting audio from video files
+    3. Splitting large files into API-compatible chunks
+    4. Managing temporary file operations
+    """
     
     def __init__(self):
         self.progress = ProgressTracker()
     
     def get_media_files(self) -> List[Path]:
-        """Get all supported media files from the media-files directory."""
+        """
+        Discover and validate media files in the media-files directory.
+        
+        Returns:
+            List[Path]: A list of paths to supported media files.
+            
+        Note:
+            - Checks file extensions against SUPPORTED_VIDEO_FORMATS and SUPPORTED_AUDIO_FORMATS
+            - Logs unsupported files for user awareness
+        """
         media_dir = Path('media-files')
         supported_files = []
         unsupported_files = []
@@ -213,7 +238,21 @@ class MediaProcessor:
         return supported_files
     
     def extract_audio(self, media_path: Path) -> List[tuple]:
-        """Extract audio from media file and split into chunks."""
+        """
+        Extract and chunk audio from a media file.
+        
+        Args:
+            media_path (Path): Path to the source media file
+            
+        Returns:
+            List[tuple]: List of (chunk_path, start_time, end_time) for each audio segment
+            
+        Note:
+            - Automatically detects video vs audio input
+            - Splits files larger than MAX_FILE_SIZE
+            - Creates temporary files in the temp directory
+            - Handles cleanup of intermediate files
+        """
         try:
             is_video = media_path.suffix.lower() in SUPPORTED_VIDEO_FORMATS
             file_type = "video" if is_video else "audio"
@@ -292,14 +331,35 @@ class MediaProcessor:
 # ============================================================================
 
 class Transcriber:
-    """Handles the transcription of audio chunks using OpenAI's Whisper API."""
+    """
+    Handles the transcription process using OpenAI's Whisper API.
+    
+    This class manages:
+    1. API communication with OpenAI
+    2. Chunk-by-chunk transcription
+    3. Result aggregation and file output
+    4. Progress tracking and error handling
+    """
     
     def __init__(self):
         self.progress = ProgressTracker()
         self.client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
     
     def transcribe_chunk(self, chunk_path: str) -> Optional[str]:
-        """Transcribe a single chunk of audio."""
+        """
+        Transcribe a single audio chunk using Whisper API.
+        
+        Args:
+            chunk_path (str): Path to the audio chunk file
+            
+        Returns:
+            Optional[str]: Transcribed text if successful, None if failed
+            
+        Note:
+            - Uses OpenAI's Whisper-1 model
+            - Implements progress tracking
+            - Handles API errors gracefully
+        """
         try:
             progress_thread = self.progress.start("Transcribing audio chunk")
             with open(chunk_path, 'rb') as audio_file:
@@ -331,7 +391,16 @@ class Transcriber:
 # ============================================================================
 
 class TranscriptionApp:
-    """Main application class that orchestrates the transcription process."""
+    """
+    Main application orchestrator for the transcription process.
+    
+    Responsibilities:
+    1. Coordinating the overall transcription workflow
+    2. Managing environment setup and validation
+    3. Handling file processing and cleanup
+    4. Providing user feedback and progress updates
+    5. Error handling and recovery
+    """
     
     def __init__(self):
         self.env_setup = EnvironmentSetup()
@@ -339,7 +408,22 @@ class TranscriptionApp:
         self.transcriber = Transcriber()
     
     def process_media_file(self, media_path: Path) -> Optional[Path]:
-        """Process a single media file."""
+        """
+        Process a single media file through the complete transcription pipeline.
+        
+        Args:
+            media_path (Path): Path to the media file to process
+            
+        Returns:
+            Optional[Path]: Path to the transcript file if successful, None if failed
+            
+        Workflow:
+        1. Extract audio from media
+        2. Split into chunks if needed
+        3. Transcribe each chunk
+        4. Combine results
+        5. Clean up temporary files
+        """
         try:
             print_header(f"Processing: {media_path.name}")
             transcript_file = self.transcriber.create_transcript_file(media_path.stem)

@@ -1,7 +1,14 @@
 """
 Combine Transcripts - A utility script to merge multiple transcript files into one.
+
+This script provides functionality to:
+1. Discover transcript files in a specified directory
+2. Merge multiple transcripts into a single file
+3. Add clear separators and headers for readability
+4. Handle errors gracefully with informative messages
+
 Author: OkhDev
-Version: 1.0.0
+Version: 1.0.1
 """
 
 import os
@@ -47,7 +54,15 @@ def print_status(message: str, status: str = "info") -> None:
     print(f"{color}{symbol} {message}{Colors.RESET}")
 
 def get_output_filename() -> Path:
-    """Generate output filename with timestamp."""
+    """
+    Generate a unique output filename using current timestamp.
+    
+    Returns:
+        Path: Path object with format 'combined_transcript_YYYYMMDD_HHMMSS.txt'
+        
+    Note:
+        Ensures unique filenames to prevent overwriting previous combinations
+    """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return Path(f"combined_transcript_{timestamp}.txt")
 
@@ -56,23 +71,46 @@ def get_output_filename() -> Path:
 # ============================================================================
 
 class TranscriptCombiner:
-    """Handles the combination of multiple transcript files."""
+    """
+    Handles the combination of multiple transcript files into a single document.
+    
+    This class manages:
+    1. File discovery and validation
+    2. Content merging with proper formatting
+    3. Output file generation with timestamps
+    4. Error handling and user feedback
+    
+    Attributes:
+        input_dir (Path): Source directory containing transcript files
+        output_file (Path): Destination file for combined transcripts
+    """
     
     def __init__(self, input_dir: Path = TRANSCRIPTS_DIR, output_file: Optional[Path] = None):
-        """Initialize the TranscriptCombiner.
+        """
+        Initialize the TranscriptCombiner with input and output paths.
         
         Args:
-            input_dir: Directory containing transcript files
-            output_file: Optional custom output file path
+            input_dir (Path): Directory containing transcript files to combine
+            output_file (Optional[Path]): Custom output file path. If None, generates timestamped name
+            
+        Note:
+            - Default input directory is 'transcripts/'
+            - Default output uses timestamp for unique naming
         """
         self.input_dir = input_dir
         self.output_file = output_file or get_output_filename()
     
     def get_transcript_files(self) -> List[Path]:
-        """Get all transcript files from the input directory.
+        """
+        Discover and validate transcript files in the input directory.
         
         Returns:
-            List of paths to transcript files
+            List[Path]: Sorted list of paths to valid transcript files
+            
+        Note:
+            - Only processes .txt files
+            - Returns files in sorted order for consistent output
+            - Provides feedback about number of files found
         """
         if not self.input_dir.exists():
             print_status(f"Directory '{self.input_dir}' not found", "error")
@@ -88,13 +126,21 @@ class TranscriptCombiner:
         return transcript_files
     
     def combine_files(self, transcript_files: List[Path]) -> bool:
-        """Combine multiple transcript files into one.
+        """
+        Merge multiple transcript files into a single document.
         
         Args:
-            transcript_files: List of transcript files to combine
+            transcript_files (List[Path]): List of transcript files to combine
             
         Returns:
-            bool: True if combination was successful, False otherwise
+            bool: True if combination was successful, False if any errors occurred
+            
+        Process:
+        1. Creates output file with unique name
+        2. Processes each input file sequentially
+        3. Adds headers and separators for clarity
+        4. Handles encoding and file operations safely
+        5. Provides progress feedback for each file
         """
         if not transcript_files:
             return False
@@ -138,7 +184,16 @@ class TranscriptCombiner:
 # ============================================================================
 
 def main() -> None:
-    """Main function to run the transcript combiner."""
+    """
+    Main entry point for the transcript combination utility.
+    
+    Workflow:
+    1. Initialize TranscriptCombiner
+    2. Discover available transcript files
+    3. Combine files if any are found
+    4. Handle interruptions and errors gracefully
+    5. Provide clear feedback throughout process
+    """
     try:
         # Initialize combiner with default or custom paths
         combiner = TranscriptCombiner()
